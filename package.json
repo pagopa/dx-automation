@@ -1,0 +1,15 @@
+{
+  "name": "dx-automation",
+  "private": true,
+  "type": "module",
+  "description": "DX Repository for Automations",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8",
+  "devDependencies": {
+    "@devcontainers/cli": "^0.86.0",
+    "@nx/eslint": "^22.7.0",
+    "@nx/js": "^22.7.0",
+    "@nx/vitest": "^22.7.0",
+    "nx": "22.7.0"
+  }
+}
