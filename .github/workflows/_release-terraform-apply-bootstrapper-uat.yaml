@@ -1,0 +1,19 @@
+name: Release Bootstrapper Infrastructure - uat
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/bootstrapper/**"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: pagopa/dx/.github/workflows/release-terraform-bootstrapper-v1.yaml@main
+    name: Release Bootstrapper (uat)
+    secrets: inherit
+    with:
+      environment: 'uat'
