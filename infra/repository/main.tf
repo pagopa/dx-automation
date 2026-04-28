@@ -6,7 +6,7 @@ module "github_repository" {
     name                   = "dx-automation"
     description            = "DX Repository for Automations"
     topics                 = []
-    reviewers_teams        = []
+    reviewers_teams        = ["engineering-team-devex"]
     environments           = ["uat", "prod"]
   }
 }
