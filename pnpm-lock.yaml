@@ -24,6 +24,8 @@ importers:
         specifier: 22.7.0
         version: 22.7.0
 
+  apps/dummy: {}
+
 packages:
 
   '@babel/code-frame@7.29.0':
