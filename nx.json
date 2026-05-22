@@ -24,6 +24,9 @@
     }
   },
   "release": {
+    "projects": [
+      "@pagopa/dx-dummy"
+    ],
     "versionPlans": true,
     "projectsRelationship": "independent",
     "version": {},
