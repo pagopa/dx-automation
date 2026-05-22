@@ -12,8 +12,12 @@
   "devDependencies": {
     "@devcontainers/cli": "^0.86.0",
     "@nx/eslint": "^22.7.0",
-    "@nx/js": "^22.7.0",
+    "@nx/js": "22.7.0",
     "@nx/vitest": "^22.7.0",
+    "@swc-node/register": "~1.11.1",
+    "@swc/core": "~1.15.5",
+    "@swc/helpers": "~0.5.18",
     "nx": "22.7.0"
-  }
+  },
+  "dependencies": {}
 }
