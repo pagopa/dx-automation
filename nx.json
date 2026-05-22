@@ -24,15 +24,15 @@
     }
   },
   "release": {
-    "projects": [
-      "@pagopa/dx-dummy"
-    ],
     "versionPlans": true,
+    "projects": [
+      "apps/*"
+    ],
     "projectsRelationship": "independent",
     "version": {},
     "changelog": {
       "projectChangelogs": {
-        "createRelease": "github",
+        "createRelease": false,
         "file": "{projectRoot}/CHANGELOG.md",
         "renderOptions": {
           "authors": true,
@@ -43,10 +43,9 @@
       }
     },
     "git": {
-      "commit": true,
+      "commit": false,
       "tag": true,
-      "stageChanges": false,
-      "push": true
+      "stageChanges": false
     },
     "releaseTag": {
       "pattern": "{projectName}@{version}"
