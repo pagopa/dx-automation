@@ -35,6 +35,8 @@ importers:
 
   apps/dummy: {}
 
+  apps/dummytwo: {}
+
 packages:
 
   '@babel/code-frame@7.29.0':
