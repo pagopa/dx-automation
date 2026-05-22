@@ -1,0 +1,19 @@
+name: Deploy dummy app on tag
+
+on:
+  push:
+    # GitHub Actions does not evaluate path filters for tag pushes.
+    # Scope production deploys with the project-specific release tag prefix.
+    tags:
+      - "@pagopa/dx-dummy@*"
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy dummy app
+        shell: bash
+        run: |
+          echo "Deploying dummy app on tag ${GITHUB_REF#refs/tags/}"
