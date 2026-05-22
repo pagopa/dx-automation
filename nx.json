@@ -32,7 +32,7 @@
     "version": {},
     "changelog": {
       "projectChangelogs": {
-        "createRelease": false,
+        "createRelease": "github",
         "file": "{projectRoot}/CHANGELOG.md",
         "renderOptions": {
           "authors": true,
@@ -43,9 +43,10 @@
       }
     },
     "git": {
-      "commit": false,
+      "commit": true,
       "tag": true,
-      "stageChanges": false
+      "stageChanges": false,
+      "push": true
     },
     "releaseTag": {
       "pattern": "{projectName}@{version}"
