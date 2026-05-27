@@ -24,6 +24,7 @@ validate_positive_integer() {
 require_command base64
 require_command gh
 require_command git
+require_command od
 
 : "${APP_SLUG:?APP_SLUG is required}"
 : "${FIXED_TAG_NAME:?FIXED_TAG_NAME is required}"
@@ -57,7 +58,7 @@ git config user.name "$bot_login"
 git config user.email "${bot_user_id}+${bot_login}@users.noreply.github.com"
 
 random_prefix() {
-  tr -dc 'a-z0-9' </dev/urandom | head -c 10
+  LC_ALL=C od -An -N5 -tx1 /dev/urandom | tr -d ' \n'
 }
 
 tag_exists_locally() {
