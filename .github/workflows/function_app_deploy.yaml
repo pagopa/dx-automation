@@ -1,0 +1,190 @@
+on:
+  workflow_call:
+    inputs:
+      workspace_name:
+        type: string
+        required: true
+        description: The name of the workspace to create the artifact for.
+      environment:
+        description: Environment where the artifact will be deployed.
+        type: string
+        required: true
+      resource_group_name:
+        description: Function App resource group name.
+        type: string
+        required: true
+      function_app_name:
+        description: Function App name.
+        type: string
+        required: true
+      use_staging_slot:
+        description: True if artifact should be deployed to staging slot
+        type: boolean
+        required: false
+        default: true
+      use_private_agent:
+        description: Use a private agent to deploy the built artifact.
+        type: boolean
+        required: false
+        default: true
+      use_labels:
+        description: Use labels to start the right environment's GitHub runner. If use_labels is true, also use_private_agent must be set to true
+        type: boolean
+        required: false
+        default: false
+      override_labels:
+        description: Needed for special cases where the environment alone is not sufficient as a distinguishing label
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-cd
+  cancel-in-progress: true
+
+env:
+  BUNDLE_NAME: bundle
+
+jobs:
+  build:
+    name: Build Artifact
+    runs-on: ubuntu-latest
+    env:
+      WORKSPACE: ${{ inputs.workspace_name }}
+      TURBO_CACHE_DIR: .turbo-cache
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        name: Checkout
+
+      - name: Detect turbo version
+        id: turbo-version
+        run: |
+          TURBO_VERSION=$(jq -r '.devDependencies.turbo | sub("^[\\^~]";"") | split(".") | .[0]' package.json)
+          echo "version=$TURBO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Prune (turbo 1.x)
+        if: steps.turbo-version.outputs.version == '1'
+        env:
+          WORKSPACE: ${{ env.WORKSPACE }}
+        run: |
+          npx turbo@1.13.3 prune --scope "$WORKSPACE"
+          echo "::warning::Turbo 1.x is deprecated. Please upgrade to the latest version."
+
+      - name: Prune
+        if: steps.turbo-version.outputs.version != '1'
+        env:
+          WORKSPACE: ${{ env.WORKSPACE }}
+        run: npx turbo prune --scope "$WORKSPACE"
+
+      - name: Node Setup
+        uses: pagopa/dx/.github/actions/node-setup@main
+        with:
+          working_dir: ./out
+
+      # we fall back to node-moules, even in case pnp is configured, in order to avoid bundling dependencies
+      - name: Install dependencies
+        run: |
+          yarn config set nodeLinker node-modules
+          yarn config set nmHoistingLimits workspaces
+          yarn install --immutable
+        working-directory: ./out
+
+      - name: Build
+        run: yarn build
+        working-directory: ./out
+
+      - name: Build the Function App Artifact
+        id: make-function-app-artifact
+        env:
+          BUNDLE_NAME: ${{ env.BUNDLE_NAME }}
+          WORKSPACE: ${{ env.WORKSPACE }}
+        run: |
+          npm pkg set --json "bundledDependencies"=true
+          npm pkg set --json "files"='["**/function.json", "dist", "host.json","extensions.csproj"]'
+          npx npm-pack-zip
+          PKG_NAME=$(jq -r .name package.json | sed 's|/|-|g')
+          mv "${PKG_NAME}.zip" "$BUNDLE_NAME.zip"
+          echo "artifact-path=$(realpath "$BUNDLE_NAME.zip")" >> "$GITHUB_OUTPUT"
+        working-directory: ./out/apps/${{ env.WORKSPACE }}
+
+      - name: Upload Artifact
+        uses: pagopa/dx/.github/actions/upload-artifact@main
+        with:
+          bundle_name: ${{ env.BUNDLE_NAME }}
+          file_path: ${{ steps.make-function-app-artifact.outputs.artifact-path }}
+
+  deploy:
+    name: Deploy
+    if: ${{ !github.event.act }}
+    needs: [build]
+    # Use inputs.override_labels if set; otherwise, fall back to inputs.environment.
+    # When inputs.use_labels and inputs.use_private_agent are true, apply the selected labels.
+    # Default to 'self-hosted' if inputs.use_private_agent is true, or 'ubuntu-latest' otherwise.
+    runs-on: ${{ inputs.use_labels && inputs.use_private_agent && (inputs.override_labels != '' && inputs.override_labels || inputs.environment) || inputs.use_private_agent && 'self-hosted' || 'ubuntu-latest' }}
+    environment: ${{ inputs.environment }}-cd
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+      FUNCTION_APP_NAME: ${{ inputs.function_app_name }}
+
+    steps:
+      - name: Download Artifact
+        uses: pagopa/dx/.github/actions/download-artifact@main
+        with:
+          bundle_name: ${{ env.BUNDLE_NAME }}
+
+      - name: Cloud Login
+        uses: pagopa/dx/actions/csp-login@main
+
+      - name: Check if the custom warm-up is configured
+        run: |
+          WARMUP_SETTINGS=$(az webapp config appsettings list \
+            --resource-group "$RESOURCE_GROUP_NAME" \
+            --name "$FUNCTION_APP_NAME" \
+            --query "[?name=='WEBSITE_SWAP_WARMUP_PING_STATUSES'||name=='WEBSITE_SWAP_WARMUP_PING_PATH']")
+          if [ $(echo "$WARMUP_SETTINGS" | jq 'length') -ne 2 ]; then
+            echo "::error::WEBSITE_SWAP_WARMUP_PING_PATH and WEBSITE_SWAP_WARMUP_PING_STATUSES are not set. Please update the webapp module to the latest version to continue."
+            exit 1
+          fi
+
+      - name: Clear the routing rules
+        run: |
+          az webapp traffic-routing clear \
+            --resource-group "$RESOURCE_GROUP_NAME" \
+            --name "$FUNCTION_APP_NAME"
+
+      - name: Deploy to Production
+        if: ${{ inputs.use_staging_slot == false }}
+        run: |
+          az webapp deploy \
+            --resource-group "$RESOURCE_GROUP_NAME" \
+            --name "$FUNCTION_APP_NAME" \
+            --src-path  "$BUNDLE_NAME.zip" \
+            --type zip \
+            --async false
+
+      - name: Deploy to Staging Slot
+        if: ${{ inputs.use_staging_slot == true }}
+        run: |
+          az webapp deploy \
+            --resource-group "$RESOURCE_GROUP_NAME" \
+            --name "$FUNCTION_APP_NAME" \
+            --slot staging \
+            --src-path  "$BUNDLE_NAME.zip" \
+            --type zip \
+            --async false
+
+      - name: Swap Staging and Production Slots
+        if: ${{ inputs.use_staging_slot == true }}
+        run: |
+          az webapp deployment slot swap \
+            --resource-group "$RESOURCE_GROUP_NAME" \
+            --name "$FUNCTION_APP_NAME" \
+            --slot staging \
+            --target-slot production

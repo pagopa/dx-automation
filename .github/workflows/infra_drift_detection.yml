@@ -1,0 +1,254 @@
+name: Drift Detection
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment where the resources will be deployed.
+        type: string
+        required: true
+        default: prod
+      base_path:
+        description: The base path on which the script will look for Terraform projects
+        type: string
+        required: true
+        default: infra/resources/
+      use_private_agent:
+        description: Use a private agent to run the Terraform plan.
+        type: boolean
+        required: false
+        default: false
+      override_github_environment:
+        description: Set a value if GitHub Environment name is different than the TF environment folder
+        type: string
+        required: false
+        default: ""
+      use_labels:
+        description: Use labels to start the right environment's GitHub runner. If use_labels is true, also use_private_agent must be set to true
+        type: boolean
+        required: false
+        default: false
+      override_labels:
+        description: Needed for special cases where the environment alone is not sufficient as a distinguishing label
+        type: string
+        required: false
+        default: ""
+
+env:
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  ARM_STORAGE_USE_AZUREAD: true
+  ROLE_ARN: ${{ secrets.ROLE_ARN }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  BASE_DIR: ${{ inputs.base_path }}
+  AZURE_ENVIRONMENT: ${{ inputs.environment }}
+  TF_IN_AUTOMATION: true
+
+jobs:
+  terraform_driftdetection_job:
+    name: Terraform Drift Detection
+    runs-on: ${{ inputs.use_labels && inputs.use_private_agent && (inputs.override_labels != '' && inputs.override_labels || inputs.environment) || inputs.use_private_agent && 'self-hosted' || 'ubuntu-latest' }}
+    environment: ${{ inputs.override_github_environment == '' && inputs.environment || inputs.override_github_environment}}-ci
+    concurrency:
+      group: ${{ github.workflow }}-${{ inputs.environment }}-ci
+      cancel-in-progress: true
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      TF_HTTP_USERNAME: ${{ secrets.STATEGRAPH_USERNAME }}
+      TF_HTTP_PASSWORD: ${{ secrets.STATEGRAPH_TOKEN }}
+    steps:
+      # Exit with error if SLACK_WEBHOOK_URL is not set
+      - name: Check Slack Webhook
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL is not set. Please set the secret."
+            exit 1
+          fi
+
+      # Set the directory where the Terraform files are located
+      # The directory value is then available in ${{ steps.directory.outputs.dir }}
+      - name: Set directory
+        id: directory
+        env:
+          ENVIRONMENT: ${{ env.AZURE_ENVIRONMENT }}
+          BASE_PATH: ${{ env.BASE_DIR }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ENVIRONMENT" ]; then
+            echo "Environment must be provided."
+            exit 1
+          fi
+
+          if ! [[ "$ENVIRONMENT" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "Invalid environment input. Allowed: letters, numbers, ., _, -"
+            exit 1
+          fi
+
+          if ! [[ "$BASE_PATH" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
+            echo "Invalid base_path input. Allowed: letters, numbers, /, _, -"
+            exit 1
+          fi
+
+          if [[ "$BASE_PATH" == /* ]]; then
+            echo "Invalid base_path input. Absolute paths are not allowed."
+            exit 1
+          fi
+          # Remove trailing slash from BASE_PATH if present
+          BASE_PATH="${BASE_PATH%/}"
+          # The directory is expected to be in the format
+          #  infra/resources/${{ inputs.environment }}
+          # Example: infra/resources/prod
+          printf "dir=%q/%q" "$BASE_PATH" "$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        name: Checkout
+
+      - name: Cloud Login
+        uses: pagopa/dx/actions/csp-login@main
+
+      - name: Terraform Setup
+        id: set-terraform-version
+        uses: pagopa/dx/.github/actions/terraform-setup@main
+
+      - name: Terraform Init
+        working-directory: ${{ steps.directory.outputs.dir }}
+        run: |
+          terraform init -input=false
+
+      # Run Terraform Plan
+      # The plan output is saved in a file and then processed to remove unnecessary lines
+      # The step never fails but the result is checked in the next step
+      # This is because we want to post the plan output in the PR even if the plan fails
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ steps.directory.outputs.dir }}
+        run: |
+          set -uo pipefail
+          terraform plan \
+            -lock=false \
+            -no-color \
+            -input=false \
+            -detailed-exitcode \
+            -out=plan.tfplan | \
+            grep -v "hidden-link:"
+
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ "$EXIT_CODE" -eq 1 ]; then
+            echo "::error::Terraform plan exited with an error"
+            exit 1
+          elif [ "$EXIT_CODE" -eq 2 ]; then
+            echo "::notice::Terraform plan detected changes"
+          fi
+
+      - name: Drift Detection
+        id: drift
+        working-directory: ${{ steps.directory.outputs.dir }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f plan.tfplan ]; then
+            echo "::error::Terraform plan file not found."
+            exit 1
+          fi
+
+          terraform show -no-color -json plan.tfplan > plan.json
+          NO_CHANGES=$(jq 'if .resource_changes then [.resource_changes[] | select(.change.actions | index("create") or index("update") or index("delete"))] | length else 0 end' plan.json)
+
+          if [ "$NO_CHANGES" -eq 0 ]; then
+            echo "No drifts in this configuration"
+            echo "drift_found=false" >> $GITHUB_OUTPUT
+          else
+            echo "Drift detected:"
+
+            echo "drift_found=true" >> $GITHUB_OUTPUT
+
+            # Count the number of resources to add, change and destroy
+            TO_ADD=$(jq '[.resource_changes[] | select(.change.actions | index("create"))] | length' plan.json)
+            TO_CHANGE=$(jq '[.resource_changes[] | select(.change.actions | index("update"))] | length' plan.json)
+            TO_DESTROY=$(jq '[.resource_changes[] | select(.change.actions | index("delete"))] | length' plan.json)
+
+            echo " - Resources to add: $TO_ADD"
+            echo " - Resources to change: $TO_CHANGE"
+            echo " - Resources to destroy: $TO_DESTROY"
+
+            # Save the variables in the environment for use in the next steps
+            echo "TO_ADD=$TO_ADD" >> $GITHUB_ENV
+            echo "TO_CHANGE=$TO_CHANGE" >> $GITHUB_ENV
+            echo "TO_DESTROY=$TO_DESTROY" >> $GITHUB_ENV
+          fi
+        continue-on-error: true
+
+      - name: Get Workflow Data in order to send notifications
+        if: ${{ steps.drift.outputs.drift_found == 'true' || failure() }}
+        id: workflow_data
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId
+            });
+            const data = run.data;
+            // Strip hidden HTML comments from release metadata before posting to Slack.
+            const commitMessageSingleLine = data.head_commit.message
+              .replace(/<!--[\s\S]*?-->/g, ' ')
+              .replace(/\n/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            // Set output for each value
+            core.setOutput("workflow_url", data.html_url);
+            core.setOutput("workflow_name", data.display_title);
+            core.setOutput("repo_url", data.repository.html_url);
+            core.setOutput("repo_name", data.repository.full_name);
+            core.setOutput("commit_sha", data.head_sha);
+            core.setOutput("commit_message", commitMessageSingleLine);
+            core.setOutput("commit_url", `${data.repository.html_url}/commit/${data.head_sha}`);
+            core.setOutput("committer_name", data.head_commit.committer.name);
+
+      - name: Drift Notification
+        if: ${{ steps.drift.outputs.drift_found == 'true' }}
+        id: drift_notify
+        uses: pagopa/dx/.github/actions/slack-notification@main
+        with:
+          id: "Drift Detected"
+          title: ":x: Drift detected by *${{ steps.workflow_data.outputs.workflow_name }}*."
+          text: |-
+            *${{ steps.workflow_data.outputs.workflow_name }}* results:
+            :shipit: *Owner*: ${{ steps.workflow_data.outputs.committer_name }}
+            :diamond_shape_with_a_dot_inside: *Commit URL*: <${{ steps.workflow_data.outputs.commit_url }}|${{ steps.workflow_data.outputs.commit_sha }}>
+            :envelope: *Commit message*: ${{ steps.workflow_data.outputs.commit_message }}
+            :page_with_curl: *Terraform* plan results:
+            :heavy_plus_sign: Resource to add: ${{ env.TO_ADD }}
+            :wavy_dash: Resource to change: ${{ env.TO_CHANGE }}
+            :heavy_minus_sign: Resource to destroy: ${{ env.TO_DESTROY }}
+             *Linked Repo*: <${{ steps.workflow_data.outputs.repo_url }}|${{ steps.workflow_data.outputs.repo_name }}>
+          slack_webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+
+      - name: Failure Notification
+        if: ${{ failure() }}
+        id: failure_notify
+        uses: pagopa/dx/.github/actions/slack-notification@main
+        with:
+          id: "Workflow Failed"
+          title: ":x: The workflow *${{ steps.workflow_data.outputs.workflow_name }}* has failed."
+          text: |-
+            Check the Workflow:
+             *URL*: ${{ steps.workflow_data.outputs.workflow_url }}
+             *Linked Repo*: <${{ steps.workflow_data.outputs.repo_url }}|${{ steps.workflow_data.outputs.repo_name }}>
+          slack_webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+
+      # Exit with an error if drift is detected, to ensure
+      # the failure is reflected in the README badge
+      - name: Exit with error
+        if: ${{ failure() || steps.drift.outputs.drift_found == 'true' }}
+        run: exit 1

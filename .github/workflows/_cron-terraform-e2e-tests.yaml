@@ -1,0 +1,103 @@
+name: Terraform modules end-to-end tests (weekly)
+
+on:
+  schedule:
+    - cron: "0 2 * * 0" # Every Sunday at 02:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  ARM_STORAGE_USE_AZUREAD: true
+  TF_IN_AUTOMATION: true
+
+jobs:
+  terraform-e2e-tests:
+    name: Run Terraform E2E Tests
+    runs-on: dev
+    environment: automation-dev-cd
+    permissions:
+      actions: write
+      id-token: write
+      contents: read
+    env:
+      ARM_CLIENT_ID: ${{ secrets.INTEGRATION_ARM_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.INTEGRATION_ARM_SUBSCRIPTION_ID }}
+      GITHUB_TOKEN: ${{ github.token }}
+      E2E_GITHUB_RUNNER_PAT: ${{ secrets.E2E_GITHUB_RUNNER_PAT }}
+      E2E_GITHUB_APP_ID: ${{ secrets.E2E_GITHUB_APP_ID }}
+      E2E_GITHUB_APP_INSTALLATION_ID: ${{ secrets.E2E_GITHUB_APP_INSTALLATION_ID }}
+      E2E_GITHUB_APP_PRIVATE_KEY: ${{ secrets.E2E_GITHUB_APP_PRIVATE_KEY }}
+
+    steps:
+      - name: Ensure Slack Webhook is Set
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL is not set. Please set the secret."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Cloud Provider Login
+        uses: pagopa/dx/actions/csp-login@main
+
+      - name: Node Setup
+        uses: pagopa/dx/.github/actions/node-setup@main
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: "go.work"
+
+      - name: Get terraform version from .terraform-version file
+        id: get-version
+        uses: pagopa/dx/.github/actions/get-terraform-version@main
+
+      - name: Terraform Setup
+        id: set-terraform-version
+        uses: pagopa/dx/.github/actions/terraform-setup@main
+        with:
+          terraform_version: ${{ steps.get-version.outputs.terraform_version }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Cache Nx
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: .nx
+          key: ${{ runner.os }}-nx-cache-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-nx-cache-
+
+      - name: Refresh Cloud Provider Login
+        uses: pagopa/dx/actions/csp-login@main
+
+      - name: Run Terraform E2E Tests
+        timeout-minutes: 720 # 12 hours
+        env:
+          GOFLAGS: "-p=1"
+        run: |
+          pnpm nx run-many \
+            --target test:e2e \
+            --parallel=1
+
+      - name: Notify Slack on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: pagopa/dx/.github/actions/slack-notification@main
+        with:
+          id: "Terraform E2E Tests"
+          title: "*Terraform E2E Tests failed*"
+          text: "One or more end-to-end tests failed in the weekly run. Please check the
+            <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+            github.run_id }}|workflow run> for details."
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}

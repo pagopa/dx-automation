@@ -1,0 +1,126 @@
+name: Publish SDK - Legacy
+
+# This workflow is used by functions that do not use the monorepo
+# and still use a legacy architecture that will be deprecated in the future.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment where the artifact will be deployed.
+        type: string
+        required: true
+      use_private_agent:
+        description: Use a private agent to deploy the built artifact.
+        type: boolean
+        required: false
+        default: true
+      openapiSpecPath:
+        required: false
+        type: string
+      apiProjectDir:
+        required: false
+        default: "."
+        type: string
+      sdkPackageName:
+        required: false
+        default: ""
+        type: string
+      generatorPackageName:
+        required: false
+        default: "@pagopa/openapi-codegen-ts"
+        type: string
+      npmRegistry:
+        required: false
+        default: https://registry.npmjs.org/
+        type: string
+      artifactName:
+        required: false
+        default: Bundle_SDK
+        type: string
+
+env:
+  BUNDLE_NAME: bundle
+  GENERATED_CODE_DIR: ./generated_${{ inputs.artifactName }}
+  CODE_GEN_PACKAGE_NAME_PARAM: ${{ inputs.sdkPackageName != '' && format('--package-name {0}', inputs.sdkPackageName) || '' }}
+
+concurrency:
+  group: ${{ github.workflow }}-cd
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      WORKSPACE: ${{ github.workspace }}
+
+    steps:
+      - name: Check-out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Generate client and definitions
+        env:
+          GENERATOR_PACKAGE_NAME: ${{ inputs.generatorPackageName }}
+          OPENAPI_SPEC_PATH: ${{ inputs.openapiSpecPath }}
+          GENERATED_CODE_DIR: ${{ env.GENERATED_CODE_DIR }}
+          CODE_GEN_PACKAGE_NAME_PARAM: ${{ env.CODE_GEN_PACKAGE_NAME_PARAM }}
+        run: |-
+          set -euo pipefail
+          PACKAGE="$GENERATOR_PACKAGE_NAME"
+
+          # If the application use a specific version of the generator package, use it; otherwise, just use latest version from the registry
+          # Warning: yarn only is supported
+          CODEGEN_VERSION=$(yarn list --depth=0 | grep "$PACKAGE" |  grep -Eo "([0-9]+\.)+[0-9]+" || echo '*')
+
+          # Execute the generator fetching the specific package from the registry
+          npx -p "$PACKAGE@$CODEGEN_VERSION" gen-api-sdk --api-spec "$OPENAPI_SPEC_PATH" \
+            --out-dir "$GENERATED_CODE_DIR" $CODE_GEN_PACKAGE_NAME_PARAM --request-types --response-decoders --client
+
+        working-directory: "${{ inputs.apiProjectDir }}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version-file: ".node-version"
+          cache: "yarn"
+          cache-dependency-path: "yarn.lock"
+
+      - name: Install dependencies
+        run: yarn install --immutable
+        working-directory: .
+
+      - name: Build
+        run: yarn build
+        working-directory: .
+
+      - name: Upload Artifact
+        uses: pagopa/dx/.github/actions/upload-artifact@main
+        with:
+          bundle_name: ${{ inputs.artifactName }}
+          file_path: "${{ env.GENERATED_CODE_DIR }}"
+
+  deploy:
+    if: ${{ !github.event.act }}
+    needs: [build]
+    runs-on: ${{ inputs.use_private_agent == true && 'self-hosted' || 'ubuntu-latest' }}
+    environment: ${{ inputs.environment }}-cd
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download Artifact
+        uses: pagopa/dx/.github/actions/download-artifact@main
+        with:
+          bundle_name: ${{ inputs.artifactName }}
+          file_path: ${{ env.GENERATED_CODE_DIR }}
+
+      - name: Publish
+        env:
+          NPM_REGISTRY: ${{ inputs.npmRegistry }}
+          GENERATED_CODE_DIR: ${{ env.GENERATED_CODE_DIR }}
+        run: npm publish --access public --registry "$NPM_REGISTRY"
+        working-directory: "${{ env.GENERATED_CODE_DIR }}"

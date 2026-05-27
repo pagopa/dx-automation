@@ -1,0 +1,70 @@
+name: Create Test Tags With GitHub App
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag-count:
+        description: "Total number of tags to create. One slot is reserved for fixed-tag-name."
+        required: true
+        default: "6"
+        type: string
+      fixed-tag-name:
+        description: "Real tag prefix to include in the generated list, without the @version suffix (for example: docs or @pagopa/dx-cli)."
+        required: true
+        default: "docs"
+        type: string
+      fixed-tag-position:
+        description: "1-based position where the fixed tag must appear in the push sequence."
+        required: true
+        default: "1"
+        type: string
+      target-ref:
+        description: "Branch, tag, or commit SHA to tag."
+        required: true
+        default: "main"
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.target-ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-tags:
+    name: Create Ordered Test Tags
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # Reuse the same GitHub App secrets used by the release workflow so this
+      # manual debug path exercises the same authentication model.
+      - name: Generate GitHub App token
+        id: generate-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # 3.1.1
+        with:
+          client-id: ${{ secrets.GH_APP_RELEASE_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_RELEASE_APP_KEY }}
+          permission-contents: write
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: "true"
+          ref: ${{ inputs.target-ref }}
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Create and push tags with GitHub App
+        id: create-tags
+        shell: bash
+        env:
+          APP_SLUG: ${{ steps.generate-token.outputs.app-slug }}
+          FIXED_TAG_NAME: ${{ inputs.fixed-tag-name }}
+          FIXED_TAG_POSITION: ${{ inputs.fixed-tag-position }}
+          GITHUB_APP_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          TAG_COUNT: ${{ inputs.tag-count }}
+          TARGET_REF: ${{ inputs.target-ref }}
+        run: bash ./.github/scripts/create-test-tags-with-github-app.sh

@@ -1,0 +1,395 @@
+name: Static Analysis - TF Validation
+
+on:
+  workflow_call:
+    inputs:
+      terraform_version:
+        description: Terraform version to use. If not set, it is automatically retrieved from .terraform-version file.
+        type: string
+        required: false
+      pre_commit_tf_tag:
+        description: |
+          Pre-commit Terraform TAG to use,
+          is release tag + package digest (Ref. Digest https://github.com/antonbabenko/pre-commit-terraform/pkgs/container/pre-commit-terraform)
+          Example: vX.Y.Z@sha256:000...N
+        type: string
+        required: false
+      enable_modified_files_detection:
+        description: If true, the pipeline will run pre-commit on modified files only.
+        type: boolean
+        required: false
+        default: false
+      check_to_run:
+        description: If set, it runs only the specified pre-commit hook check. Otherwise, all checks are run.
+        type: string
+        required: false
+      folder:
+        description: If set, it runs the pre-commit on a single folder. Otherwise, it is run on all files.
+        type: string
+        required: false
+      verbose:
+        description: If enabled, it prints the verbose logging of pre-commit checks
+        type: boolean
+        required: false
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: tf-static-analysis-${{ github.head_ref }}-${{inputs.folder || 'all-files'}}-${{ inputs.check_to_run || 'all-checks' }}
+  cancel-in-progress: true
+
+jobs:
+  get-versions:
+    name: Get Terraform and pre-commit Version
+    runs-on: ubuntu-latest
+    if: ${{ inputs.terraform_version == '' || inputs.pre_commit_tf_tag == '' }}
+    outputs:
+      terraform_version: ${{ steps.get-terraform-version.outputs.terraform_version }}
+      pre_commit_terraform_version: ${{ steps.get-pre-commit-version.outputs.pre_commit_terraform_version }}
+      pre_commit_terraform_image_tag: ${{ steps.get-pre-commit-version.outputs.pre_commit_terraform_image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Get terraform version from .terraform-version file
+        id: get-terraform-version
+        if: ${{ inputs.terraform_version == '' }}
+        uses: pagopa/dx/.github/actions/get-terraform-version@main
+
+      - name: Get pre-commit version from .pre-commit-config file
+        id: get-pre-commit-version
+        if: ${{ inputs.pre_commit_tf_tag == '' }}
+        uses: pagopa/dx/.github/actions/get-pre-commit-version@main
+        with:
+          default_version: "1.96.2"
+
+  tf_analysis:
+    name: Terraform Validation
+    runs-on: ubuntu-latest
+    needs: [get-versions]
+    if: ${{ always() }}
+    env:
+      TERRAFORM_VERSION: ${{ inputs.terraform_version || needs.get-versions.outputs.terraform_version }}
+    container:
+      image: ghcr.io/antonbabenko/pre-commit-terraform:${{ inputs.pre_commit_tf_tag || needs.get-versions.outputs.pre_commit_terraform_image_tag }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Checkout DX Trivy policies
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: pagopa/dx
+          ref: main
+          path: .dx-security
+          sparse-checkout: |
+            .trivy/checks/terraform
+          sparse-checkout-cone-mode: false
+
+      - name: Git config
+        run: |
+          set -eu
+
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git fetch --no-tags --prune --depth=1 origin +refs/heads/*:refs/remotes/origin/*
+
+      - name: Fix Alpine Container Image
+        run: |
+          apk --no-cache add tar
+          python -m pip freeze --local
+
+      - name: Run Trivy custom policies
+        run: |
+          set -eu
+
+          trivy config "./" \
+            --disable-telemetry \
+            --misconfig-scanners terraform \
+            --raw-config-scanners terraform \
+            --skip-dirs "**/.terraform" \
+            --skip-dirs "**/tests/**" \
+            --ignorefile .trivyignore \
+            --tf-exclude-downloaded-modules \
+            --config-check .dx-security/.trivy/checks/terraform \
+            --check-namespaces user \
+            --severity MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --skip-version-check \
+            --exit-code 0 > /tmp/trivy-output.json || true
+
+          cat /tmp/trivy-output.json
+
+      - name: Run pre-commit on specific folders
+        if: ${{ inputs.folder != '' }}
+        id: pre_commit_specific_folders
+        env:
+          PRE_COMMIT_VERBOSE: ${{ inputs.verbose && '1' || '0' }}
+          LOCK_MODULES_JSON_OUTPUT_FILE: "lock_output.json"
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_FOLDER: ${{ inputs.folder }}
+          INPUT_CHECK_TO_RUN: ${{ inputs.check_to_run }}
+        run: |
+          set -eu
+
+          if ! [[ "$INPUT_FOLDER" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
+            echo "Invalid folder input. Allowed: letters, numbers, /, _, -"
+            exit 1
+          fi
+
+          if [ -n "$INPUT_CHECK_TO_RUN" ] && ! [[ "$INPUT_CHECK_TO_RUN" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "Invalid check_to_run input. Allowed: letters, numbers, _, -"
+            exit 1
+          fi
+
+          CHECK_ARGS=()
+          if [ -n "$INPUT_CHECK_TO_RUN" ]; then
+            CHECK_ARGS=("$INPUT_CHECK_TO_RUN")
+          fi
+
+          echo "Start pre-commit on specific folder $INPUT_FOLDER"
+
+          find "$INPUT_FOLDER" -type f | xargs pre-commit run \
+            --color=always \
+            --show-diff-on-failure \
+            ${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"} \
+            --files 2>&1 | tee /tmp/pre-commit-output.log
+      - name: Run pre-commit on Modified Files
+        if: ${{ inputs.folder == '' && github.event_name == 'pull_request' && inputs.enable_modified_files_detection }}
+        id: pre_commit_modified_files
+        env:
+          PRE_COMMIT_VERBOSE: ${{ inputs.verbose && '1' || '0' }}
+          LOCK_MODULES_JSON_OUTPUT_FILE: "lock_output.json"
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_CHECK_TO_RUN: ${{ inputs.check_to_run }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -eu
+
+          if [ -n "$INPUT_CHECK_TO_RUN" ] && ! [[ "$INPUT_CHECK_TO_RUN" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "Invalid check_to_run input. Allowed: letters, numbers, _, -"
+            exit 1
+          fi
+
+          # Validate PR refs are not empty
+          if [ -z "$BASE_REF" ]; then
+            echo "Error: BASE_REF is empty. This step requires a pull_request event context."
+            exit 1
+          fi
+
+          if [ -z "$HEAD_REF" ]; then
+            echo "Error: HEAD_REF is empty. This step requires a pull_request event context."
+            exit 1
+          fi
+
+          # Validate PR refs are safe strings (alphanumeric, /, _, -, ., ~)
+          # This prevents command injection while allowing valid branch names
+          if ! [[ "$BASE_REF" =~ ^[a-zA-Z0-9/_.~-]+$ ]]; then
+            echo "Error: Invalid base ref format: $BASE_REF"
+            echo "Allowed characters: letters, numbers, /, _, -, ., ~"
+            exit 1
+          fi
+
+          if ! [[ "$HEAD_REF" =~ ^[a-zA-Z0-9/_.~-]+$ ]]; then
+            echo "Error: Invalid head ref format: $HEAD_REF"
+            echo "Allowed characters: letters, numbers, /, _, -, ., ~"
+            exit 1
+          fi
+
+          CHECK_ARGS=()
+          if [ -n "$INPUT_CHECK_TO_RUN" ]; then
+            CHECK_ARGS=("$INPUT_CHECK_TO_RUN")
+          fi
+
+          echo "Start pre-commit only on modified files"
+          echo "- FROM  Base ref: origin/$BASE_REF"
+          echo "- TO    Head ref: origin/$HEAD_REF"
+
+          pre-commit run \
+            --color=always \
+            --show-diff-on-failure \
+            --from-ref "origin/$BASE_REF" \
+            --to-ref "origin/$HEAD_REF" \
+            ${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"} 2>&1 | tee /tmp/pre-commit-output.log
+
+      - name: Run pre-commit
+        if: ${{ inputs.folder == '' && (!github.event_name == 'pull_request' || !inputs.enable_modified_files_detection) }}
+        id: pre_commit
+        env:
+          PRE_COMMIT_VERBOSE: ${{ inputs.verbose && '1' || '0' }}
+          LOCK_MODULES_JSON_OUTPUT_FILE: "lock_output.json"
+          GITHUB_TOKEN: ${{ github.token }}
+          INPUT_CHECK_TO_RUN: ${{ inputs.check_to_run }}
+        run: |
+          set -eu
+
+          if [ -n "$INPUT_CHECK_TO_RUN" ] && ! [[ "$INPUT_CHECK_TO_RUN" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "Invalid check_to_run input. Allowed: letters, numbers, _, -"
+            exit 1
+          fi
+
+          CHECK_ARGS=()
+          if [ -n "$INPUT_CHECK_TO_RUN" ]; then
+            CHECK_ARGS=("$INPUT_CHECK_TO_RUN")
+          fi
+
+          echo "Start pre-commit on all files"
+
+          pre-commit run \
+            --color=always \
+            --show-diff-on-failure \
+            --all-files \
+            ${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"} 2>&1 | tee /tmp/pre-commit-output.log
+
+      - name: Summarize pre-commit results
+        if: always()
+        id: summary
+        shell: bash
+        env:
+          FOLDER: ${{ inputs.folder }}
+          EVENT_NAME: ${{ github.event_name }}
+          ENABLE_MODIFIED_FILES_DETECTION: ${{ inputs.enable_modified_files_detection }}
+          CHECK_TO_RUN: ${{ inputs.check_to_run }}
+        run: |
+          # Create a temporary file for the summary
+          SUMMARY_FILE="/tmp/pre-commit-summary.md"
+          touch "$SUMMARY_FILE"
+
+          # Initialize variables
+          EXECUTION_SCOPE="all files"
+          [ -n "$FOLDER" ] && EXECUTION_SCOPE="folder: $FOLDER"
+          [ "$EVENT_NAME" == "pull_request" ] && [ "$ENABLE_MODIFIED_FILES_DETECTION" == "true" ] && EXECUTION_SCOPE="modified files"
+
+          # Utility functions to add content to both summary and temporary file
+          add_to_summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "$1" >> "$SUMMARY_FILE"; }
+          add_markdown() { for line in "$@"; do add_to_summary "$line"; done; }
+
+          # Terraform modules handling
+          if [ -f "lock_output.json" ]; then
+            # Extract module statistics with fallback to 0
+            TOTAL_MODULES=$(jq -r '.summary.total_modules // 0' lock_output.json 2>/dev/null || echo "0")
+
+            if [ "$TOTAL_MODULES" -gt 0 ]; then
+              # Add change warning
+              add_markdown \
+                "> [!CAUTION]" \
+                "> ### ⚠️ Terraform module changes detected - locks need updating" \
+                ">" \
+                "> ### What should be done next" \
+                ">" \
+                "> 1. Run this command locally to update the module locks:" \
+                ">" \
+                "> \`\`\`bash" \
+                "> pre-commit run -a lock_modules" \
+                "> \`\`\`" \
+                ">" \
+                "> 2. Then open a dedicated Pull Request with the updated module locks" \
+                ""
+
+              # Change details
+              add_markdown \
+                "<details>" \
+                "<summary>📊 What has changed</summary>" \
+                "" \
+                "### Module Stats:"
+
+              # Calculate and show statistics
+              for status in "new" "changed" "removed"; do
+                count=$(jq -r "[.results[]? | select(.status == \"$status\")] | length" lock_output.json 2>/dev/null || echo "0")
+                add_to_summary "- **${status^} modules**: $count"
+              done
+
+              # Modules table
+              add_markdown \
+                "" \
+                "| Module | Status | Version | Path |" \
+                "|--------|--------|---------|------|"
+
+              # Add module details or show error
+              JQ_OUT=$(jq -r '.results[] | "| " + .module + " | " + .status + " | " + .version + " | " + (.path // "N/A") + " |"' lock_output.json) && {
+                echo "$JQ_OUT" >> "$GITHUB_STEP_SUMMARY"
+                echo "$JQ_OUT" >> "$SUMMARY_FILE"
+              } || {
+                add_markdown \
+                  "Error processing JSON file. Raw content:" \
+                  "\`\`\`json"
+                CAT_OUT=$(cat lock_output.json)
+                echo "$CAT_OUT" >> "$GITHUB_STEP_SUMMARY"
+                echo "$CAT_OUT" >> "$SUMMARY_FILE"
+                add_to_summary "\`\`\`"
+              }
+              add_to_summary "</details>"
+            else
+              add_markdown \
+                "> [!TIP]" \
+                "> ### ✅ All Terraform module locks are up to date" \
+                ">" \
+                "> No module changes detected - everything is in sync!" \
+                ""
+            fi
+            add_to_summary ""
+          fi
+
+          # Trivy custom policies output
+          if [ -f "/tmp/trivy-output.json" ] && jq -e '[.Results[]? | .Misconfigurations[]?] | length > 0' /tmp/trivy-output.json > /dev/null 2>&1; then
+            add_markdown \
+              '> [!WARNING]' \
+              '> ### ⚠️ Trivy detected forbidden Terraform patterns' \
+              '>' \
+              '> The following findings must be resolved before this check becomes enforced.' \
+              ''
+
+            TRIVY_TABLE=$(jq -r '
+              ["| Severity | ID | File | Line | Title |",
+               "|----------|----|------|------|-------|"] +
+              [.Results[] |
+                .Target as $target |
+                .Misconfigurations[]? |
+                "| " + .Severity + " | " + .AVDID + " | `" + $target + "` | L" + (.CauseMetadata.StartLine | tostring) + " | " + .Title + " |"
+              ] | .[]' /tmp/trivy-output.json)
+
+            echo "$TRIVY_TABLE" >> "$GITHUB_STEP_SUMMARY"
+            echo "$TRIVY_TABLE" >> "$SUMMARY_FILE"
+            add_to_summary ''
+          fi
+
+          # Pre-commit output
+          if [ -f "/tmp/pre-commit-output.log" ]; then
+            # Show output log
+            add_markdown \
+              '<details>' \
+              '<summary>📋 Pre-commit Output Log</summary>' \
+              '' \
+              '```'
+            PRECOMMIT_CLEAN=$(sed 's/\x1b\[[0-9;]*m//g' /tmp/pre-commit-output.log)
+            echo "$PRECOMMIT_CLEAN" >> "$GITHUB_STEP_SUMMARY"
+            echo "$PRECOMMIT_CLEAN" >> "$SUMMARY_FILE"
+            add_markdown '```' '</details>'
+          else
+            add_to_summary "⚠️ No pre-commit output found. Check if pre-commit was executed."
+          fi
+
+          # Final summary
+          CHECK_INFO="${CHECK_TO_RUN:-all checks}"
+          add_markdown \
+            "" \
+            "<sub>Generated on $(date)</br>Run ${CHECK_INFO} on ${EXECUTION_SCOPE}</sub>"
+
+          # Set the summary file path as output
+          echo "summary_file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+          echo "decouple_string=Run ${CHECK_INFO} on ${EXECUTION_SCOPE}" >> "$GITHUB_OUTPUT"
+
+      - name: Post Summary on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: pagopa/dx/actions/pr-comment@main
+        with:
+          comment-body-file: ${{ steps.summary.outputs.summary_file }}
+          search-pattern: ${{ steps.summary.outputs.decouple_string }}

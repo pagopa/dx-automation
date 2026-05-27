@@ -1,0 +1,20 @@
+name: Drift Detection
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "00 08 * * 1-5" # Run at 08:00 Monday through Friday
+
+jobs:
+  drift_detection_prod:
+    uses: ./.github/workflows/infra_drift_detection.yml
+    name: Drift Detection - PROD
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    secrets: inherit
+    with:
+      environment: "prod"
+      override_github_environment: "infra-prod"
+      base_path: "infra/resources"

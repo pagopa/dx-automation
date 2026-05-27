@@ -1,0 +1,61 @@
+on:
+  workflow_call:
+    inputs:
+      dockerfile_path:
+        type: string
+        required: false
+        default: './Dockerfile'
+        description: Dockerfile path
+      dockerfile_context:
+        type: string
+        required: false
+        default: '.'
+        description: Dockerfile build context
+      docker_image_name:
+        type: string
+        required: false
+        default: ${{ github.repository }}
+        description: Docker image name, defaults to repository name
+      image_description:
+        type: string
+        required: true
+        description: A description to use as image label
+      image_authors:
+        type: string
+        required: false
+        default: PagoPA
+        description: Authors names to use as image label
+      build_args:
+        description: List of build arguments to use for Dockerfile build, given in env=value format.
+        type: string
+        required: false
+      build_platforms:
+        type: string
+        required: false
+        default: linux/amd64
+        description: Image runtime platform, supports multiple values
+
+jobs:
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        name: Checkout
+
+      - name: Docker Build
+        uses: pagopa/dx/actions/docker-build-push@main
+        with:
+          dockerfile_path: ${{ inputs.dockerfile_path }}
+          dockerfile_context: ${{ inputs.dockerfile_context }}
+          docker_image_name: ${{ inputs.docker_image_name }}
+          docker_image_description: ${{ inputs.image_description }}
+          docker_image_authors: ${{ inputs.image_authors }}
+          build_args: ${{ inputs.build_args }}
+          build_platforms: ${{ inputs.build_platforms }}
+          push_to_registry: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
