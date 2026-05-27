@@ -50,7 +50,6 @@ target_commit="$(git rev-parse "${TARGET_REF}^{commit}")"
 bot_login="${APP_SLUG}[bot]"
 bot_user_id="$(gh api "/users/${bot_login}" --jq .id)"
 server_host="${GITHUB_SERVER_URL#https://}"
-basic_auth="$(printf 'x-access-token:%s' "$GITHUB_APP_TOKEN" | base64 | tr -d '\n')"
 version_minor="${GITHUB_RUN_NUMBER:-0}"
 version_patch_base="$(( (${GITHUB_RUN_ATTEMPT:-1} * 1000) + 100 ))"
 
@@ -74,8 +73,7 @@ tag_exists_on_remote() {
 push_tag() {
   local tag="$1"
 
-  git -c "http.https://${server_host}/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
-    push origin "refs/tags/${tag}"
+  git push origin "refs/tags/${tag}"
 }
 
 declare -a generated_tags=()
