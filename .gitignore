@@ -314,3 +314,5 @@ terraform.rc
 .nx/polygraph
 .claude/worktrees
 .claude/settings.local.json
+
+push_and_tag.sh
