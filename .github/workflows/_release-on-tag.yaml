@@ -11,7 +11,9 @@ permissions: {}
 
 jobs:
   deploy:
+    name: Deploy dummy app on tag
     runs-on: ubuntu-latest
+    environment: npm-prod-cd
     steps:
       - name: Deploy dummy app
         shell: bash
