@@ -11,7 +11,7 @@ on:
       fixed-tag-name:
         description: "Real tag prefix to include in the generated list, without the @version suffix (for example: docs or @pagopa/dx-cli)."
         required: true
-        default: "docs"
+        default: "@pagopa/dx-dummy"
         type: string
       fixed-tag-position:
         description: "1-based position where the fixed tag must appear in the push sequence."
