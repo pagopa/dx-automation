@@ -12,7 +12,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: write
-    uses: pagopa/dx/.github/workflows/validate-v1.yaml@use-regex-for-tags-release-website-to-azure
+    uses: pagopa/dx/.github/workflows/validate-v1.yaml@main
     secrets:
       app-client-id: ${{ secrets.GH_APP_RELEASE_CLIENT_ID }}
       app-private-key: ${{ secrets.GH_APP_RELEASE_APP_KEY }}
