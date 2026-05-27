@@ -49,7 +49,6 @@ fi
 target_commit="$(git rev-parse "${TARGET_REF}^{commit}")"
 bot_login="${APP_SLUG}[bot]"
 bot_user_id="$(gh api "/users/${bot_login}" --jq .id)"
-server_host="${GITHUB_SERVER_URL#https://}"
 version_minor="${GITHUB_RUN_NUMBER:-0}"
 version_patch_base="$(( (${GITHUB_RUN_ATTEMPT:-1} * 1000) + 100 ))"
 
