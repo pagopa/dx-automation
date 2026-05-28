@@ -1,3 +1,13 @@
+## 0.2.4 (2026-05-28)
+
+### 🩹 Fixes
+
+- Test ([b1720c6](https://github.com/pagopa/dx-automation/commit/b1720c6))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.2.3 (2026-05-28)
 
 ### 🩹 Fixes
