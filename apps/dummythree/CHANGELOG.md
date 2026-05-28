@@ -1,3 +1,13 @@
+## 0.0.4 (2026-05-28)
+
+### 🩹 Fixes
+
+- Ciao ([2209c61](https://github.com/pagopa/dx-automation/commit/2209c61))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.0.3 (2026-05-28)
 
 ### 🩹 Fixes
