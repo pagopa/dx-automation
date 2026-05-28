@@ -1,0 +1,6 @@
+{
+  "name": "@pagopa/dx-dummyfive",
+  "version": "0.0.1",
+  "main": "index.js",
+  "private": true
+}
