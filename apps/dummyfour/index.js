@@ -1,1 +1,1 @@
-console.log("dummyfour initialized");
+console.log("dummyfour initialized 2");
