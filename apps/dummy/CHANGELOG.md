@@ -1,3 +1,13 @@
+## 0.2.7 (2026-05-28)
+
+### 🩹 Fixes
+
+- Built ([cde367b](https://github.com/pagopa/dx-automation/commit/cde367b))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.2.6 (2026-05-28)
 
 ### 🩹 Fixes
