@@ -1,3 +1,13 @@
+## 0.1.6 (2026-05-28)
+
+### 🩹 Fixes
+
+- Test really good ([61f4c46](https://github.com/pagopa/dx-automation/commit/61f4c46))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.1.5 (2026-05-28)
 
 ### 🩹 Fixes
