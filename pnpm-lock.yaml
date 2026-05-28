@@ -45,6 +45,8 @@ importers:
 
   apps/dummytwo: {}
 
+  apps/webhook-echo: {}
+
 packages:
 
   '@babel/code-frame@7.29.0':
