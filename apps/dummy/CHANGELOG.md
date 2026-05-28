@@ -1,3 +1,13 @@
+## 0.2.2 (2026-05-28)
+
+### 🩹 Fixes
+
+- One tag ([7f25602](https://github.com/pagopa/dx-automation/commit/7f25602))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.2.1 (2026-05-28)
 
 ### 🩹 Fixes
