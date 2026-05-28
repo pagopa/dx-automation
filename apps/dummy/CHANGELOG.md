@@ -1,3 +1,13 @@
+## 0.2.1 (2026-05-28)
+
+### 🩹 Fixes
+
+- Edit ([28f46f5](https://github.com/pagopa/dx-automation/commit/28f46f5))
+
+### ❤️ Thank You
+
+- Christian Calabrese
+
 ## 0.2.0 (2026-05-22)
 
 ### 🚀 Features

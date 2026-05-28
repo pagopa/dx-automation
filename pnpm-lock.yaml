@@ -35,6 +35,14 @@ importers:
 
   apps/dummy: {}
 
+  apps/dummyfive: {}
+
+  apps/dummyfour: {}
+
+  apps/dummysix: {}
+
+  apps/dummythree: {}
+
   apps/dummytwo: {}
 
 packages:
