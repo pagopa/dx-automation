@@ -1,1 +1,1 @@
-console.log("dummysix initialized");
+console.log("dummysix initialized 12");
