@@ -12,7 +12,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: write
-    uses: pagopa/dx/.github/workflows/validate-v1.yaml@add-delay-between-tag-push
+    uses: pagopa/dx/.github/workflows/validate-v1.yaml@75507cde15188135269bc22b1f8fbd993587daeb # add-delay-between-tag-push
     secrets:
       app-client-id: ${{ secrets.GH_APP_RELEASE_CLIENT_ID }}
       app-private-key: ${{ secrets.GH_APP_RELEASE_APP_KEY }}
